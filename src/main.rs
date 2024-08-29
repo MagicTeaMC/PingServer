@@ -77,7 +77,7 @@ async fn ping(req: web::Json<PingRequest>) -> impl Responder {
 
 let output = Command::new("ping")
     .arg(ip_version_flag)
-    .arg("-c")
+    .arg("-t")
     .arg("4")
     .arg(ip_addr.to_string())
     .output();
