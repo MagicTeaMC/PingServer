@@ -9,14 +9,14 @@ use std::process::Command;
 #[derive(Deserialize)]
 struct PingRequest {
     api_key: String,
-    target_ip: String,
+    target: String,  // Changed from target_ip to target to be more generic
     ip_version: String,
 }
 
 #[derive(Deserialize)]
 struct MtrRequest {
     api_key: String,
-    target_ip: String,
+    target: String,  // Changed from target_ip to target to be more generic
     ip_version: String,
 }
 
@@ -45,12 +45,131 @@ fn load_api_keys() -> Vec<String> {
     keys.split(',').map(|s| s.to_string()).collect()
 }
 
-fn execute_ping(ip_addr: &IpAddr, ip_version_flag: &str) -> Result<String, String> {
-    let output = Command::new("ping")
-        .arg(ip_version_flag)
+fn is_valid_domain_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '.'
+}
+
+fn is_valid_domain_label(label: &str) -> bool {
+    if label.is_empty() || label.len() > 63 {
+        return false;
+    }
+    
+    // Label cannot start or end with hyphen
+    if label.starts_with('-') || label.ends_with('-') {
+        return false;
+    }
+    
+    // All characters must be valid
+    label.chars().all(is_valid_domain_char)
+}
+
+fn validate_domain(domain: &str) -> Result<(), String> {
+    // Basic length check
+    if domain.is_empty() {
+        return Err("Domain cannot be empty".to_string());
+    }
+    
+    if domain.len() > 253 {
+        return Err("Domain name too long (max 253 characters)".to_string());
+    }
+    
+    // Remove trailing dot if present (FQDN)
+    let domain = domain.strip_suffix('.').unwrap_or(domain);
+    
+    // Check for invalid characters
+    if !domain.chars().all(is_valid_domain_char) {
+        return Err("Domain contains invalid characters".to_string());
+    }
+    
+    // Cannot start or end with dot or hyphen
+    if domain.starts_with('.') || domain.ends_with('.') || 
+       domain.starts_with('-') || domain.ends_with('-') {
+        return Err("Domain has invalid format".to_string());
+    }
+    
+    // Cannot have consecutive dots
+    if domain.contains("..") {
+        return Err("Domain cannot contain consecutive dots".to_string());
+    }
+    
+    // Split into labels and validate each
+    let labels: Vec<&str> = domain.split('.').collect();
+    
+    if labels.len() < 2 {
+        return Err("Domain must have at least two labels (e.g., example.com)".to_string());
+    }
+    
+    for label in &labels {
+        if !is_valid_domain_label(label) {
+            return Err(format!("Invalid domain label: '{}'", label));
+        }
+    }
+    
+    // Check for blocked domains/patterns
+    let domain_lower = domain.to_lowercase();
+    
+    // Block localhost and local domains
+    if domain_lower == "localhost" || domain_lower.ends_with(".localhost") ||
+       domain_lower.ends_with(".local") || domain_lower.ends_with(".localdomain") {
+        return Err("Local domains are not allowed".to_string());
+    }
+    
+    // Block internal/private domains
+    if domain_lower.ends_with(".internal") || domain_lower.ends_with(".corp") ||
+       domain_lower.ends_with(".home") || domain_lower.ends_with(".lan") {
+        return Err("Internal/private domains are not allowed".to_string());
+    }
+    
+    // Block test domains
+    if domain_lower.ends_with(".test") || domain_lower.ends_with(".example") {
+        return Err("Test/example domains are not allowed".to_string());
+    }
+    
+    // Block domains that resolve to private IPs (basic patterns)
+    if domain_lower.contains("10.") || domain_lower.contains("192.168.") ||
+       domain_lower.contains("172.16.") || domain_lower.contains("127.") {
+        return Err("Domains containing private IP patterns are not allowed".to_string());
+    }
+    
+    Ok(())
+}
+
+fn validate_target(target: &str) -> Result<(), String> {
+    // Trim whitespace
+    let target = target.trim();
+    
+    if target.is_empty() {
+        return Err("Target cannot be empty".to_string());
+    }
+    
+    // Try to parse as IP address
+    if let Ok(ip_addr) = target.parse::<IpAddr>() {
+        // If it's an IP, check if it's private
+        if is_private_ip(ip_addr) {
+            return Err("Private network IP addresses are not allowed".to_string());
+        }
+    } else {
+        // If it's not an IP, validate as domain
+        validate_domain(target)?;
+    }
+    
+    Ok(())
+}
+
+fn execute_ping(target: &str, ip_version_flag: &str) -> Result<String, String> {
+    let mut cmd = Command::new("ping");
+    
+    // Add IP version flag if specified
+    if ip_version_flag == "-4" {
+        cmd.arg("-4");
+    } else if ip_version_flag == "-6" {
+        cmd.arg("-6");
+    }
+    
+    let output = cmd
         .arg("-c")
         .arg("4")
-        .arg(ip_addr.to_string())
+        .arg(target)  // Pass target directly (IP or domain)
         .output()
         .map_err(|e| format!("Failed to execute ping: {}", e))?;
 
@@ -64,10 +183,10 @@ fn execute_ping(ip_addr: &IpAddr, ip_version_flag: &str) -> Result<String, Strin
     Ok(stdout_result)
 }
 
-fn execute_mtr(ip_addr: &IpAddr, ip_version_flag: &str) -> Result<String, String> {
+fn execute_mtr(target: &str, ip_version_flag: &str) -> Result<String, String> {
     let mut cmd = Command::new("mtr");
     
-    // Add IP version flag
+    // Add IP version flag if specified
     if ip_version_flag == "-4" {
         cmd.arg("-4");
     } else if ip_version_flag == "-6" {
@@ -75,11 +194,10 @@ fn execute_mtr(ip_addr: &IpAddr, ip_version_flag: &str) -> Result<String, String
     }
     
     let output = cmd
-        .arg("--report")           // Generate report instead of interactive mode
-        .arg("--report-cycles")    // Number of pings per hop
+        .arg("--report")
+        .arg("--report-cycles")
         .arg("10")
-        .arg("--no-dns")          // Don't resolve hostnames (faster and more reliable)
-        .arg(ip_addr.to_string())
+        .arg(target)
         .output()
         .map_err(|e| format!("Failed to execute mtr: {}", e))?;
 
@@ -103,35 +221,27 @@ async fn ping(req: web::Json<PingRequest>) -> impl Responder {
         });
     }
 
-    let ip_addr: IpAddr = match req.target_ip.parse() {
-        Ok(ip) => ip,
-        Err(_) => {
-            return HttpResponse::BadRequest().json(PingResponse {
-                success: false,
-                output: "Invalid IP address".to_string(),
-            });
-        }
-    };
-
-    if is_private_ip(ip_addr) {
+    // Validate target (IP or domain)
+    if let Err(error) = validate_target(&req.target) {
         return HttpResponse::Forbidden().json(PingResponse {
             success: false,
-            output: "Pinging private network IP addresses is not allowed".to_string(),
+            output: error,
         });
     }
 
     let ip_version_flag = match req.ip_version.as_str() {
         "ipv4" => "-4",
         "ipv6" => "-6",
+        "auto" | "" => "",  // Let ping decide
         _ => {
             return HttpResponse::BadRequest().json(PingResponse {
                 success: false,
-                output: "Invalid IP version".to_string(),
+                output: "Invalid IP version. Use 'ipv4', 'ipv6', or 'auto'".to_string(),
             });
         }
     };
 
-    match execute_ping(&ip_addr, ip_version_flag) {
+    match execute_ping(&req.target, ip_version_flag) {
         Ok(output) => HttpResponse::Ok().json(PingResponse {
             success: true,
             output,
@@ -153,35 +263,27 @@ async fn mtr(req: web::Json<MtrRequest>) -> impl Responder {
         });
     }
 
-    let ip_addr: IpAddr = match req.target_ip.parse() {
-        Ok(ip) => ip,
-        Err(_) => {
-            return HttpResponse::BadRequest().json(MtrResponse {
-                success: false,
-                output: "Invalid IP address".to_string(),
-            });
-        }
-    };
-
-    if is_private_ip(ip_addr) {
+    // Validate target (IP or domain)
+    if let Err(error) = validate_target(&req.target) {
         return HttpResponse::Forbidden().json(MtrResponse {
             success: false,
-            output: "MTR to private network IP addresses is not allowed".to_string(),
+            output: error,
         });
     }
 
     let ip_version_flag = match req.ip_version.as_str() {
         "ipv4" => "-4",
         "ipv6" => "-6",
+        "auto" | "" => "",  // Let mtr decide
         _ => {
             return HttpResponse::BadRequest().json(MtrResponse {
                 success: false,
-                output: "Invalid IP version".to_string(),
+                output: "Invalid IP version. Use 'ipv4', 'ipv6', or 'auto'".to_string(),
             });
         }
     };
 
-    match execute_mtr(&ip_addr, ip_version_flag) {
+    match execute_mtr(&req.target, ip_version_flag) {
         Ok(output) => HttpResponse::Ok().json(MtrResponse {
             success: true,
             output,
