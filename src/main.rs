@@ -1,10 +1,10 @@
 #![feature(ip)]
-use actix_web::{post, web, App, HttpServer, HttpResponse, Responder};
-use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::process::Command;
-use std::env;
+use actix_web::{post, web, App, HttpResponse, HttpServer, Responder};
 use dotenvy::dotenv;
+use serde::{Deserialize, Serialize};
+use std::env;
+use std::net::IpAddr;
+use std::process::Command;
 
 #[derive(Deserialize)]
 struct PingRequest {
@@ -21,12 +21,8 @@ struct PingResponse {
 
 fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ipv4) => {
-            ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
-        }
-        IpAddr::V6(ipv6) => {
-            ipv6.is_unique_local() || ipv6.is_loopback() || ipv6.is_multicast()
-        }
+        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
+        IpAddr::V6(ipv6) => ipv6.is_unique_local() || ipv6.is_loopback() || ipv6.is_multicast(),
     }
 }
 
@@ -39,7 +35,7 @@ fn load_api_keys() -> Vec<String> {
 #[post("/ping")]
 async fn ping(req: web::Json<PingRequest>) -> impl Responder {
     let valid_api_keys = load_api_keys();
-    
+
     if !valid_api_keys.contains(&req.api_key) {
         return HttpResponse::Unauthorized().json(PingResponse {
             success: false,
@@ -75,26 +71,26 @@ async fn ping(req: web::Json<PingRequest>) -> impl Responder {
         }
     };
 
-let output = Command::new("ping")
-    .arg(ip_version_flag)
-    .arg("-c")
-    .arg("4")
-    .arg(ip_addr.to_string())
-    .output();
+    let output = Command::new("ping")
+        .arg(ip_version_flag)
+        .arg("-c")
+        .arg("4")
+        .arg(ip_addr.to_string())
+        .output();
 
-match output {
-    Ok(output) => {
-        let stdout_result = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr_result = String::from_utf8_lossy(&output.stderr).to_string();
-        
+    match output {
+        Ok(output) => {
+            let stdout_result = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr_result = String::from_utf8_lossy(&output.stderr).to_string();
+
             if stdout_result.is_empty() && !stderr_result.is_empty() {
-               return HttpResponse::InternalServerError().json(PingResponse {
-                   success: false,
-                   output: format!("Ping command failed with error: {}", stderr_result),
-             });
-           }
+                return HttpResponse::InternalServerError().json(PingResponse {
+                    success: false,
+                    output: format!("Ping command failed with error: {}", stderr_result),
+                });
+            }
 
-          HttpResponse::Ok().json(PingResponse {
+            HttpResponse::Ok().json(PingResponse {
                 success: true,
                 output: stdout_result,
             })
@@ -104,16 +100,12 @@ match output {
             output: format!("Failed to execute ping: {}", e),
         }),
     }
-
 }
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    HttpServer::new(|| {
-        App::new()
-            .service(ping)
-    })
-    .bind("0.0.0.0:9199")?
-    .run()
-    .await
+    HttpServer::new(|| App::new().service(ping))
+        .bind("0.0.0.0:9199")?
+        .run()
+        .await
 }
