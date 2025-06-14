@@ -1,5 +1,5 @@
 # PingServer
-API server to ping your host, made with rust.  
+API server to ping your host, made with rust (For Linux only).  
 Made for https://github.com/MagicTeaMC/PingCat
 ## Usage
 Ping  
